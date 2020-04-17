@@ -579,7 +579,7 @@ sub get_clat_v6_addr {
 my $cleanup_remove_clat_dev;		# true if having created it
 my $cleanup_delete_taygaconf;		# true if having made a temp confile
 my $cleanup_zero_forwarding_sysctl;	# zero forwarding sysctl if set
-my @cleanup_accept_ra_sysctls;		# accept_ra sysctls to be reset to '1'
+my $cleanup_accept_ra_sysctl;		# reset accept_ra sysctl tto '1'
 my $cleanup_zero_proxynd_sysctl;	# zero proxy_ndp sysctl if set
 my $cleanup_remove_proxynd_entry,	# true if having added proxynd entry
 my $cleanup_remove_ip6tables_rules;	# true if having added ip6tables rules
@@ -599,11 +599,11 @@ sub cleanup_and_exit {
   }
   if(defined($cleanup_zero_forwarding_sysctl)) {
     d("Cleanup: Resetting forwarding sysctl to 0");
-    sysctl("net/ipv6/conf/all/forwarding", 0);
+    sysctl("net/ipv6/conf/" . cfg("plat-dev") . "/forwarding", 0);
   }
-  for my $sysctl (@cleanup_accept_ra_sysctls) {
-    d("Cleanup: Resetting $sysctl to 1");
-    sysctl($sysctl, 1);
+  if(defined($cleanup_accept_ra_sysctl)) {
+    d("Cleanup: Resetting accept_ra sysctl to 1");
+    sysctl("net/ipv6/conf/" . cfg("plat-dev") . "/accept_ra", 1);
   }
   if(defined($cleanup_zero_proxynd_sysctl)) {
     d("Cleanup: Resetting proxy_ndp sysctl to 0");
@@ -803,20 +803,13 @@ close($tayga_conffile_fh) or err("close($tayga_conffile_fh: $!");
 # Enable IPv6 forwarding if necessary
 #
 if(cfgbool("forwarding-enable")) {
-  if(sysctl("net/ipv6/conf/all/forwarding") == 0) {
-    p("Enabling IPv6 forwarding");
-    for my $ctl (glob("/proc/sys/net/ipv6/conf/*/accept_ra")) {
-
-      # Don't touch the ctl for the "all" interface, as that will probably
-      # change interfaces that have accept_ra set to 0 also.
-      next if($ctl eq "/proc/sys/net/ipv6/conf/all/accept_ra");
-      
-      if(sysctl($ctl) == 1) {
-        d("Changing $ctl from 1 to 2 to prevent connectivity loss after ",
-          "enabling IPv6 forwarding");
-        sysctl($ctl, 2);
-        push(@cleanup_accept_ra_sysctls, $ctl);
-      }
+  if(sysctl("net/ipv6/conf/" . cfg("plat-dev") . "/forwarding") == 0) {
+    p("Enabling IPv6 forwarding on PLAT device");
+    if(sysctl("/proc/sys/net/ipv6/conf/" . cfg("plat-dev") . "/accept_ra") == 1) {
+      d("Changing accept_ra from 1 to 2 to prevent connectivity loss after ",
+        "enabling IPv6 forwarding");
+        sysctl("/proc/sys/net/ipv6/conf/" . cfg("plat-dev") . "/accept_ra", 2);
+        $cleanup_accept_ra_sysctl = 1;
     }
     sysctl("net/ipv6/conf/all/forwarding", 1);
     $cleanup_zero_forwarding_sysctl = 0;
@@ -855,13 +848,15 @@ if(cfgbool("proxynd-enable")) {
 }
 
 #
-# Create the CLAT tun interface, add the IPv4 address to it as well as the
-# route to the corresponding IPv6 address, and possibly an IPv4 default route
+# Create the CLAT tun interface, enable forwarding, add the IPv4 address to it
+# as well as the route to the corresponding IPv6 address, and possibly an IPv4
+# default route
 #
 p("Creating and configuring up CLAT device '", cfg("clat-dev"), "'");
 cmd(\&err, cfg("cmd-tayga"), "--config", cfg("tayga-conffile"), "--mktun",
     cfgint("debug") ? "-d" : "");
 $cleanup_remove_clat_dev = 1;
+sysctl("net/ipv6/conf/" . cfg("clat-dev") . "/forwarding", 1);
 cmd(\&err, cfg("cmd-ip"), qw(link set up dev), cfg("clat-dev"));
 cmd(\&err, cfg("cmd-ip"), qw(-4 address add), cfg("clat-v4-addr"),
     "dev", cfg("clat-dev"));
